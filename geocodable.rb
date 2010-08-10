@@ -162,7 +162,7 @@ module TweetyJobs
           [lat, lng]
         end
         
-        # A string representing the objects geocodable status for debugging
+        # A string representing the objects geocoding status for debugging
         def geo_info
           "GeoInfo for #{self.cache_key}: " + self.class.geocoding_required_attributes.map{|a| value = self.send(a.to_sym).to_s;[a.to_s, value.blank? ? "empty" : value ].join(": ")}.join(", ")
         end
@@ -190,8 +190,7 @@ module TweetyJobs
           return self
         end
         
-        # Inherit as much geodata from obj as possible - return false if obj can't be
-        # inherited from
+        # Inherit as much geodata from obj as possible - return false if it can't be done
         def inherit_geodata_from(obj)
           Rails.logger.debug "Setting geoattributes from #{obj.inspect}"
           return false if obj.nil?
@@ -207,16 +206,17 @@ module TweetyJobs
           end
         end
         
+        # Does the location contain more than just spaces and punctuation
         def location_blank?
-          normalize_location.size == 0
+          location_significant_chars.size == 0
         end
         
         def full_location
           location_blank? ? location : self.class.location_title_attributes.map{|a| self.try(a)}.compact.join(", ")
         end
         
-        def normalize_location
-           @normalized_location ||= self.location.to_s.gsub(/[^a-zA-Z0-9 ,\-]+/,'').to_s
+        def location_significant_chars
+           @normalized_location ||= self.location.to_s.gsub(/[^a-zA-Z0-9]+/,'')
         end
 
         def geocoded?
@@ -238,7 +238,7 @@ module TweetyJobs
         end
         
         def location_ignored?
-          TweetyJobs::Settings[:geocoding][:ignore].to_a.include?(normalize_location)
+          TweetyJobs::Settings[:geocoding][:ignore].to_a.include?(location)
         end
         
         # Is the object in a state in which it can be geocoded 
@@ -254,7 +254,7 @@ module TweetyJobs
         # A record with the same location text and a non-null lat/lng
         def best_location_match
           # TODO: Refactor so sql counts frequency instead of slow ruby array operations
-          matches = self.class.find(:all, :conditions => ["location = ? AND location IS NOT NULL AND lat IS NOT NULL AND lng IS NOT NULL", normalized_location])
+          matches = self.class.find(:all, :conditions => ["location = ? AND location IS NOT NULL AND lat IS NOT NULL AND lng IS NOT NULL", full_location])
           logger.debug "Location based matches #{matches.inspect}"
           # Sort so most common record appears first
           matches.compact.sort{|b,a| matches.select{|m| m == a}.size <=> matches.select{|m| m == b}.size }.first
@@ -262,7 +262,7 @@ module TweetyJobs
   
         # Does another record have the same location text and is already geocoded?
         def location_cached?
-          Rails.logger.debug "Attempting to geocode from previously located records with the same location #{normalize_location}"
+          Rails.logger.debug "Attempting to geocode from previously located records with the same location #{full_location}"
           @location_match = best_location_match
           if @location_match
             inherit_geodata_from(@location_match)
@@ -339,32 +339,31 @@ module TweetyJobs
           string || self.full_location
         end
         
-        # Attempt to geocode using the zip or location without using up an API call?
-        # return true if geocoding is unnecessary or impossible
-        # return false if geocoding is possible and necessary
+        # Attempt to geocode using the zip or location and local data.
+        # Return true if an accurate match was found
+        # Return false if it isn't possible
         def geocode_indirectly
           Rails.logger.debug "Attempting to geocode #{self.geo_info} indirectly"
           # If there is no location, we know there is a zip (from the has_geocodable_attributes? method),
-          # so look for a direct zip match, and if none exists, find a similar zip
+          # so look for a direct zip match
           if location_blank?
             Rails.logger.debug "Location is blank"
             return zip_match
-          #  return true
-          # If the location isn't blank but the zipcode is, then first check to see if
-          # Another user has the same location text, and has already been geocoded.
-          # If so, use this long/lat
+          # If there is no zip, but there is a location,
+          # We look for other records with the same location that have geo data
           elsif zip.blank?
             Rails.logger.debug "Zip is blank"
             return location_cached?
-          # If there is a location and a zip code, first check for other records
-          # with the same location text that have already been geocoded, then check for
-          # zip matches.  If those both fail, we need to resort to using the API
+          # If both attributes are present, try to use
+          # the location string first, then try using the zip code
           else
             Rails.logger.debug "Zip and location are intact"
             return (location_cached? || zip_match?)
           end
         end
         
+        # Use our third party api to geocode based on a passed
+        # string or our default location text (the location attribute here)
         def geocode_with_api(string=nil)
           results = geocoding_results(geocoding_string(string))
           if results.status == Geocoding::GEO_SUCCESS
@@ -380,8 +379,9 @@ module TweetyJobs
         end
         
 
-        # Geocode using the location text passed to the geocoding API
-        # If that fails and there is a non-nil zip, try to find a zip that's similar as a last result
+        # All of the other geocoding methods compounded.
+        # Ensure geocodability, try indirect geocoding, then direct geocoding
+        # with the api, then a loose zip similarity search as a last resort (if desired)
         def geocode(string=nil)
           Rails.logger.debug "Geocoding #{self.geo_info}"
           if !geocodable?
@@ -398,7 +398,8 @@ module TweetyJobs
         end
         
         
-
+        
+        # Find sibling records within "distance" miles of self
         def find_within_distance(distance)
           qualified_lat_column_name = "lat"
           qualified_lng_column_name = "lng"
