@@ -1,6 +1,6 @@
-# This module (eventually plugin) is a mixin for AR classes that are geocodable (have a lat/lng column, or a placemark column for mysql/postgres spatial extension data),
-# and have descriptive location data (city, state, zip, neighborhood, county, etc).  It is an attempt to reduce the number of api calls made to third-party geocoding services,
-# by using local data first.
+# This module (eventually plugin) provides geocoding methods for AR classes that are geocodable (have a lat/lng column, or a placemark column for mysql/postgres spatial extension data),
+# and have descriptive location data (city, state, zip, neighborhood, county, etc).  Its goal is to reduce the number of api calls made to third-party geocoding services,
+# by relying on local data first, when possible.
 
 # As an example, assume we have a class called Event which has a zip column.  After a user creates a new Event and 
 # assigns it a zip code, we'd like to record the precise geo coordinates of the event for proximity searches, so that other users
@@ -19,8 +19,8 @@ module TweetyJobs
       
       
       unless Object.constants.include? "GEOCODABLE_DEFINED"
-        GEO_ALLOW_ZIP_WILDCARDS = true # If an exact zip match isn't found, allow similar zips to be used
-        GEOCODABLE_DEFINED = 'yup' # sorry for the C idiom
+        GEO_ALLOW_ZIP_WILDCARDS = true # If an exact zip match isn't found, allow similar zips to be used as a LAST RESORT
+        GEOCODABLE_DEFINED = 'yup'
         GEO_KMS_PER_MILE = 1.609
         GEO_NMS_PER_MILE = 0.868976242
         GEO_EARTH_RADIUS_IN_MILES = 3963.19
