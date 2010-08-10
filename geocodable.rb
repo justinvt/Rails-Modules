@@ -1,5 +1,6 @@
 # This module (eventually plugin) is a mixin for AR classes that are geocodable (have a lat/lng column, or a placemark column for mysql/postgres spatial extension data),
-# and have descriptive location data (city, state, zip, neighborhood, county, etc).
+# and have descriptive location data (city, state, zip, neighborhood, county, etc).  It is an attempt to reduce the number of api calls made to third-party geocoding services,
+# by using local data first.
 
 # As an example, assume we have a class called Event which has a zip column.  After a user creates a new Event and 
 # assigns it a zip code, we'd like to record the precise geo coordinates of the event for proximity searches, so that other users
