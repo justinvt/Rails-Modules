@@ -13,6 +13,8 @@
 
 require 'ym4r/google_maps/geocoding'
 
+      
+
 module TweetyJobs
 
     module GeoCodable
@@ -29,7 +31,13 @@ module TweetyJobs
         GEO_DEFAULT_UNITS = :miles
       end
       
-      
+      class GeocodableLogger < Logger
+
+        def format_message(severity, timestamp, progname, msg)
+          "#{timestamp.to_formatted_s(:db)} #{severity} #{msg}\n" 
+        end
+        
+      end 
       
       # We use this class to make lat/lng objects for comparisons
       class LatLng
@@ -46,8 +54,12 @@ module TweetyJobs
         end
         
       end
+      
 
-
+      Logger = GeocodableLogger.new(File.join(RAILS_ROOT,"log","geocodable.log"))
+      
+      
+      
       def self.included( recipient )
         recipient.extend( GeoCodableClassMethods )
         recipient.class_eval do
@@ -97,7 +109,7 @@ module TweetyJobs
         # This is for debugging more than anything
         def geocode(location, options={})
           results = Geocoding::get(location, options)
-          Rails.logger.debug results.inspect
+          GeoCodable::Logger.debug results.inspect
           return results
         end
         
@@ -192,7 +204,7 @@ module TweetyJobs
         
         # Inherit as much geodata from obj as possible - return false if it can't be done
         def inherit_geodata_from(obj)
-          Rails.logger.debug "Setting geoattributes from #{obj.inspect}"
+          GeoCodable::Logger.debug "Setting geoattributes from #{obj.inspect}"
           return false if obj.nil?
           if obj.is_a?(Zip)
             inherit_geodata_from_zip(obj)
@@ -230,7 +242,7 @@ module TweetyJobs
         end
         
         def spherical_distance_to(lat_lng_obj)
-           "%0.2f" % self.class.distance_between self, lat_lng_obj
+           "%0.2f" % self.class.distance_between(self, lat_lng_obj)
         end
         
         def has_geocodable_attributes?
@@ -262,7 +274,7 @@ module TweetyJobs
   
         # Does another record have the same location text and is already geocoded?
         def location_cached?
-          Rails.logger.debug "Attempting to geocode from previously located records with the same location #{full_location}"
+          GeoCodable::Logger.debug "Attempting to geocode from previously located records with the same location #{full_location}"
           @location_match = best_location_match
           if @location_match
             inherit_geodata_from(@location_match)
@@ -300,10 +312,10 @@ module TweetyJobs
         def zip_match(search_zip=nil)
           search_zip ||= zip_for_search
           # TODO: Optimize for full zips, since LIKE will be slow in that case
-          Rails.logger.debug "Looking for zip code #{search_zip} to derive geo attributes from"
+          GeoCodable::Logger.debug "Looking for zip code #{search_zip} to derive geo attributes from"
           zip_code         = Zip.find(:first, :conditions => ["zip_code LIKE ?", search_zip ])
           if zip_code
-            Rails.logger.debug "Zip match found #{zip_code.cache_key}"
+            GeoCodable::Logger.debug "Zip match found #{zip_code.cache_key}"
             inherit_geodata_from(zip_code)
             self.save(false)
             return zip_code
@@ -315,7 +327,7 @@ module TweetyJobs
         # Start with the full zip and truncate iteratively until we find a zip which is similar to this object's zip
         # Quit when we find a match or the search string is shorter than 2 characters
         def iterative_zip_match?(options={})
-          Rails.logger.debug "Attempting last ditch zip match based on the first few digits of the zip"
+          GeoCodable::Logger.debug "Attempting last ditch zip match based on the first few digits of the zip"
           # disllow iterative zip searches on a case by case basis also
           options[:iterative] ||= true
           search_zip = major_zip
@@ -331,7 +343,7 @@ module TweetyJobs
         def geocoding_results(string=nil)  
           results = Geocoding::get(geocoding_string(string), :output => 'json')
           first_result = results.first
-          Rails.logger.debug "#{results.size} json results from api: First Result -> #{first_result.inspect}"
+          GeoCodable::Logger.debug "#{results.size} json results from api: First Result -> #{first_result.inspect}"
           return results
         end
         
@@ -343,21 +355,21 @@ module TweetyJobs
         # Return true if an accurate match was found
         # Return false if it isn't possible
         def geocode_indirectly
-          Rails.logger.debug "Attempting to geocode #{self.geo_info} indirectly"
+          GeoCodable::Logger.debug "Attempting to geocode #{self.geo_info} indirectly"
           # If there is no location, we know there is a zip (from the has_geocodable_attributes? method),
           # so look for a direct zip match
           if location_blank?
-            Rails.logger.debug "Location is blank"
+            GeoCodable::Logger.debug "Location is blank"
             return zip_match
           # If there is no zip, but there is a location,
           # We look for other records with the same location that have geo data
           elsif zip.blank?
-            Rails.logger.debug "Zip is blank"
+            GeoCodable::Logger.debug "Zip is blank"
             return location_cached?
           # If both attributes are present, try to use
           # the location string first, then try using the zip code
           else
-            Rails.logger.debug "Zip and location are intact"
+            GeoCodable::Logger.debug "Zip and location are intact"
             return (location_cached? || zip_match?)
           end
         end
@@ -372,7 +384,7 @@ module TweetyJobs
             return true
           else
             error = self.class.parse_geocoding_error(results)
-            Rails.logger.error "Geocoding didn't work #{error.inspect}"
+            GeoCodable::Logger.error "Geocoding didn't work #{error.inspect}"
             # All else failed - if the zip isn't blank, we'll find a zip that looks similar
             return false
           end
@@ -383,9 +395,9 @@ module TweetyJobs
         # Ensure geocodability, try indirect geocoding, then direct geocoding
         # with the api, then a loose zip similarity search as a last resort (if desired)
         def geocode(string=nil)
-          Rails.logger.debug "Geocoding #{self.geo_info}"
+          GeoCodable::Logger.debug "Geocoding #{self.geo_info}"
           if !geocodable?
-            Rails.logger.error "Object is not geocodable #{geo_info}"
+            GeoCodable::Logger.error "#{self.cache_key} is not geocodable"
           elsif geocode_indirectly
             return true
           elsif geocode_with_api
