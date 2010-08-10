@@ -1,13 +1,36 @@
-                                                                     
-                                                                     
-                                                                     
-                                             
+# This module (eventually plugin) is a mixin for AR classes that are geocodable (have a lat/lng column, or a placemark column for mysql/postgres spatial extension data),
+# and have descriptive location data (city, state, zip, neighborhood, county, etc).
+
+# As an example, assume we have a class called Event which has a zip column.  After a user creates a new Event and 
+# assigns it a zip code, we'd like to record the precise geo coordinates of the event for proximity searches, so that other users
+# may find events in their area.
+# 
+# Prevailing geocoding services allow calls to be made at a fixed, finite rate.  For a high volume model, that rate may be exceeded regularly.
+# We can use this module to reduce the rate at which calls to the api are made by attempting to geocode from local data first.
+# More specifically, we scan the database for geocoded records with
+# similar descriptive locations, and if they exist we derive the spatial data from those records, instead of through an api call.
+
 require 'ym4r/google_maps/geocoding'
 
 module TweetyJobs
 
     module GeoCodable
       
+      
+      unless Object.constants.include? "GEOCODABLE_DEFINED"
+        GEO_ALLOW_ZIP_WILDCARDS = true # If an exact zip match isn't found, allow similar zips to be used
+        GEOCODABLE_DEFINED = 'yup' # sorry for the C idiom
+        GEO_KMS_PER_MILE = 1.609
+        GEO_NMS_PER_MILE = 0.868976242
+        GEO_EARTH_RADIUS_IN_MILES = 3963.19
+        GEO_EARTH_RADIUS_IN_KMS = GEO_EARTH_RADIUS_IN_MILES * GEO_KMS_PER_MILE
+        GEO_EARTH_RADIUS_IN_NMS = GEO_EARTH_RADIUS_IN_MILES * GEO_NMS_PER_MILE
+        GEO_DEFAULT_UNITS = :miles
+      end
+      
+      
+      
+      # We use this class to make lat/lng objects for comparisons
       class LatLng
         
         attr_accessor :lat, :lng
@@ -22,18 +45,6 @@ module TweetyJobs
         end
         
       end
-      
-      unless Object.constants.include? "GEOCODABLE_DEFINED"
-        GEO_ALLOW_ZIP_WILDCARDS = true # If an exact zip match isn't found, allow similar zips to be used
-        GEOCODABLE_DEFINED = 'yup' # sorry for the C idiom
-        GEO_KMS_PER_MILE = 1.609
-        GEO_NMS_PER_MILE = 0.868976242
-        GEO_EARTH_RADIUS_IN_MILES = 3963.19
-        GEO_EARTH_RADIUS_IN_KMS = GEO_EARTH_RADIUS_IN_MILES * GEO_KMS_PER_MILE
-        GEO_EARTH_RADIUS_IN_NMS = GEO_EARTH_RADIUS_IN_MILES * GEO_NMS_PER_MILE
-        GEO_DEFAULT_UNITS = :miles
-      end
-
 
 
       def self.included( recipient )
@@ -52,12 +63,7 @@ module TweetyJobs
           named_scope       :ungeocoded,  :conditions => "lat IS NULL AND lng IS NULL"
           named_scope       :geocodable,  :conditions => "(location IS NOT NULL AND location <> '') OR (zip IS NOT NULL AND zip <> '')"
           named_scope       :geocoded,    :conditions  => "lat IS NOT NULL AND lng IS NOT NULL"
-           
-          def self.geocode(location, options={})
-            results = Geocoding::get(location, options)
-            Rails.logger.info results.inspect
-            return results
-          end
+
           
           @@geocoding_required_attributes = [:zip, :location, :lat, :lng]
           
@@ -86,7 +92,13 @@ module TweetyJobs
       end
 
       module GeoCodableClassMethods
-
+        
+        # This is for debugging more than anything
+        def geocode(location, options={})
+          results = Geocoding::get(location, options)
+          Rails.logger.debug results.inspect
+          return results
+        end
         
         def geocode_all
           ungeocoded.geocodable.each{|obj| obj.geocode }
@@ -95,8 +107,7 @@ module TweetyJobs
         def supports_geocoding?
           @@geocoding_attributes_present ||= ((column_names & geocoding_required_attributes.map(&:to_s)).uniq.size == geocoding_required_attributes.size)
         end
-          
-                  
+
         def parse_geocoding_error(results)
           @@error = \
             case results.status
@@ -152,7 +163,7 @@ module TweetyJobs
         
         # A string representing the objects geocodable status for debugging
         def geo_info
-          "GeoInfo #{self.cache_key} - " + self.class.geocoding_required_attributes.map{|a| value = self.send(a.to_sym).to_s;[a.to_s, value.blank? ? "empty" : value ].join(": ")}.join(", ")
+          "GeoInfo for #{self.cache_key}: " + self.class.geocoding_required_attributes.map{|a| value = self.send(a.to_sym).to_s;[a.to_s, value.blank? ? "empty" : value ].join(": ")}.join(", ")
         end
         
         def set_lat_lng(*coords)
@@ -181,7 +192,7 @@ module TweetyJobs
         # Inherit as much geodata from obj as possible - return false if obj can't be
         # inherited from
         def inherit_geodata_from(obj)
-          Rails.logger.info "Setting geoattributes from #{obj.inspect}"
+          Rails.logger.debug "Setting geoattributes from #{obj.inspect}"
           return false if obj.nil?
           if obj.is_a?(Zip)
             inherit_geodata_from_zip(obj)
@@ -199,7 +210,6 @@ module TweetyJobs
           normalize_location.size == 0
         end
         
-
         def full_location
           location_blank? ? location : self.class.location_title_attributes.map{|a| self.try(a)}.compact.join(", ")
         end
@@ -215,15 +225,11 @@ module TweetyJobs
         alias :already_geocoded? :geocoded?
 
         def location_display
-          location_contains_text? ? location : Zip.location_for(self.zip || self.location)
+          location_blank? ? Zip.location_for(self.zip) : location
         end
         
         def spherical_distance_to(lat_lng_obj)
-          self.class.distance_between self, lat_lng_obj
-        end
-
-        def formatted_distance_to_placemark(placemark)
-          "%0.2f" % distance_to([placemark.x, placemark.y]) rescue "?"
+           "%0.2f" % self.class.distance_between self, lat_lng_obj
         end
         
         def has_geocodable_attributes?
@@ -235,7 +241,7 @@ module TweetyJobs
         end
         
         # Is the object in a state in which it can be geocoded 
-        # (has the right atts, hasn't been geocoded already, has a location or zip 
+        # (has the right attributes, hasn't been geocoded already, has a location or zip 
         # and the location isn't in our "ignore list")
         def geocodable?
           self.class.supports_geocoding? &&
@@ -246,14 +252,16 @@ module TweetyJobs
   
         # A record with the same location text and a non-null lat/lng
         def best_location_match
+          # TODO: Refactor so sql counts frequency instead of slow ruby array operations
           matches = self.class.find(:all, :conditions => ["location = ? AND location IS NOT NULL AND lat IS NOT NULL AND lng IS NOT NULL", normalized_location])
-          logger.info "Location based matches #{matches.inspect}"
+          logger.debug "Location based matches #{matches.inspect}"
+          # Sort so most common record appears first
           matches.compact.sort{|b,a| matches.select{|m| m == a}.size <=> matches.select{|m| m == b}.size }.first
         end
   
         # Does another record have the same location text and is already geocoded?
         def location_cached?
-          Rails.logger.info "Attempting to geocode from previously located records with the same location #{normalize_location}"
+          Rails.logger.debug "Attempting to geocode from previously located records with the same location #{normalize_location}"
           @location_match = best_location_match
           if @location_match
             inherit_geodata_from(@location_match)
@@ -267,19 +275,20 @@ module TweetyJobs
         #def valid_zip?
         #end
         
+        # First N digits of zip before dash
+        def major_zip
+          @primary_zip ||= self.zip.to_s.match(/[^0-9]{0,5}/).to_s
+        end
+        
         # This will return false for an zip shorter than 5 digits and 
         # true for any zip >= 5 since we've already truncated to 5 in major_zip
         def zip_complete?
           major_zip.length == 5
         end
         
-        # First N digits of zip before dash
-        def major_zip
-          @primary_zip = self.zip.to_s.match(/[^0-9]{0,5}/).to_s
-        end
         
         # @primary_zip is populated anew on every call of zip_complete
-        # TODO: Refactor- this is unnecessarily opaque
+        # TODO: Refactor - this is unnecessarily opaque
         def zip_for_search
           zip_complete? ? @primary_zip : @primary_zip + "%"
         end
@@ -290,10 +299,10 @@ module TweetyJobs
         def zip_match(search_zip=nil)
           search_zip ||= zip_for_search
           # TODO: Optimize for full zips, since LIKE will be slow in that case
-          Rails.logger.info "Looking for zip code #{search_zip} to derive geo attributes from"
+          Rails.logger.debug "Looking for zip code #{search_zip} to derive geo attributes from"
           zip_code         = Zip.find(:first, :conditions => ["zip_code LIKE ?", search_zip ])
           if zip_code
-            Rails.logger.info "Zip match found #{zip_code.cache_key}"
+            Rails.logger.debug "Zip match found #{zip_code.cache_key}"
             inherit_geodata_from(zip_code)
             self.save(false)
             return zip_code
@@ -305,7 +314,7 @@ module TweetyJobs
         # Start with the full zip and truncate iteratively until we find a zip which is similar to this object's zip
         # Quit when we find a match or the search string is shorter than 2 characters
         def iterative_zip_match?(options={})
-          Rails.logger.info "Attempting last ditch zip match based on the first few digits of the zip"
+          Rails.logger.debug "Attempting last ditch zip match based on the first few digits of the zip"
           # disllow iterative zip searches on a case by case basis also
           options[:iterative] ||= true
           search_zip = major_zip
@@ -321,7 +330,7 @@ module TweetyJobs
         def geocoding_results(string=nil)  
           results = Geocoding::get(geocoding_string(string), :output => 'json')
           first_result = results.first
-          Rails.logger.info "#{results.size} json results from api: First Result -> #{first_result.inspect}"
+          Rails.logger.debug "#{results.size} json results from api: First Result -> #{first_result.inspect}"
           return results
         end
         
@@ -333,24 +342,24 @@ module TweetyJobs
         # return true if geocoding is unnecessary or impossible
         # return false if geocoding is possible and necessary
         def geocode_indirectly
-          Rails.logger.info "Attempting to geocode #{self.geo_info} indirectly"
+          Rails.logger.debug "Attempting to geocode #{self.geo_info} indirectly"
           # If there is no location, we know there is a zip (from the has_geocodable_attributes? method),
           # so look for a direct zip match, and if none exists, find a similar zip
           if location_blank?
-            Rails.logger.info "Location is blank"
+            Rails.logger.debug "Location is blank"
             return zip_match
           #  return true
           # If the location isn't blank but the zipcode is, then first check to see if
           # Another user has the same location text, and has already been geocoded.
           # If so, use this long/lat
           elsif zip.blank?
-            Rails.logger.info "Zip is blank"
+            Rails.logger.debug "Zip is blank"
             return location_cached?
           # If there is a location and a zip code, first check for other records
           # with the same location text that have already been geocoded, then check for
           # zip matches.  If those both fail, we need to resort to using the API
           else
-            Rails.logger.info "Zip and location are intact"
+            Rails.logger.debug "Zip and location are intact"
             return (location_cached? || zip_match?)
           end
         end
@@ -373,7 +382,7 @@ module TweetyJobs
         # Geocode using the location text passed to the geocoding API
         # If that fails and there is a non-nil zip, try to find a zip that's similar as a last result
         def geocode(string=nil)
-          Rails.logger.info "Geocoding #{self.geo_info}"
+          Rails.logger.debug "Geocoding #{self.geo_info}"
           if !geocodable?
             Rails.logger.error "Object is not geocodable #{geo_info}"
           elsif geocode_indirectly
@@ -389,7 +398,7 @@ module TweetyJobs
         
         
 
-        def find_within_new(distance)
+        def find_within_distance(distance)
           qualified_lat_column_name = "lat"
           qualified_lng_column_name = "lng"
           lat = self.lat
