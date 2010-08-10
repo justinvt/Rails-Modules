@@ -82,7 +82,7 @@ module TweetyJobs
           
           @@geocoding_indirect_attributes = [:zip, :location]
           
-          @@location_title_attributes     = [:address_1, :address_2, :city, :zip]
+          @@location_title_attributes     = [:address_1, :address_2, :city, :zip] & recipient.columns.map{|c| c.name.to_sym}
           
           @@spherical_unit_multipliers = {
             :kms    => GEO_EARTH_RADIUS_IN_KMS,
@@ -224,7 +224,7 @@ module TweetyJobs
         end
         
         def full_location
-          location_blank? ? location : self.class.location_title_attributes.map{|a| self.try(a)}.compact.join(", ")
+          location_blank? ? self.class.location_title_attributes.map{|a| self.try(a)}.compact.join(", ") : location
         end
         
         def location_significant_chars
@@ -250,7 +250,7 @@ module TweetyJobs
         end
         
         def location_ignored?
-          TweetyJobs::Settings[:geocoding][:ignore].to_a.include?(location)
+          TweetyJobs::Settings[:geocoding][:ignore].to_a.include?(location) rescue false
         end
         
         # Is the object in a state in which it can be geocoded 
@@ -332,7 +332,7 @@ module TweetyJobs
           options[:iterative] ||= true
           search_zip = major_zip
           zip_match  = zip_match(search_zip)
-          while Geocodable::GEO_ALLOW_ZIP_WILDCARDS && search_zip.length >= 2 && !zip_match && options[:iterative]
+          while GeoCodable::GEO_ALLOW_ZIP_WILDCARDS && search_zip.length >= 2 && !zip_match && options[:iterative]
             #Knock a digit off of search_zip and re-search
             search_zip = search_zip[0..(search_zip.length - 2)]
             zip_match  = zip_match(search_zip)
@@ -343,7 +343,7 @@ module TweetyJobs
         def geocoding_results(string=nil)  
           results = Geocoding::get(geocoding_string(string), :output => 'json')
           first_result = results.first
-          GeoCodable::Logger.debug "#{results.size} json results from api: First Result -> #{first_result.inspect}"
+          GeoCodable::Logger.debug "#{results.inspect} json results from api: First Result -> #{first_result.inspect}"
           return results
         end
         
@@ -379,8 +379,7 @@ module TweetyJobs
         def geocode_with_api(string=nil)
           results = geocoding_results(geocoding_string(string))
           if results.status == Geocoding::GEO_SUCCESS
-            first_result = results.first
-            inherit_geodata_from(first_result)
+            inherit_geodata_from(results)
             return true
           else
             error = self.class.parse_geocoding_error(results)
