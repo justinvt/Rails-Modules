@@ -1,19 +1,19 @@
-# This module (eventually plugin) provides geocoding methods for AR classes that are geocodable (have a lat/lng column, or a placemark column for mysql/postgres spatial extension data),
-# and have descriptive location data (city, state, zip, neighborhood, county, etc).  Its goal is to reduce the number of api calls made to third-party geocoding services,
+# This module (eventually plugin) provides geocoding methods for AR classes that are geocodable (have a lat/lng column, 
+# or a placemark column for mysql/postgres spatial extension data), and have descriptive location data (city, state, zip, 
+# neighborhood, county, etc).  Its goal is to reduce the number of api calls made to third-party geocoding services,
 # by relying on local data first, when possible.
 
-# As an example, assume we have a class called Event which has a zip column.  After a user creates a new Event and 
-# assigns it a zip code, we'd like to record the precise geo coordinates of the event for proximity searches, so that other users
+# As an example, assume we have a class called Event which has a zip column.  After a user creates a new Event and assigns
+# it a zip code, we'd like to record the precise geo coordinates of the event for proximity searches, so that other users
 # may find events in their area.
 # 
-# Prevailing geocoding services allow calls to be made at a fixed, finite rate.  For a high volume model, that rate may be exceeded regularly.
-# We can use this module to reduce the rate at which calls to the api are made by attempting to geocode from local data first.
-# More specifically, we scan the database for geocoded records with
-# similar descriptive locations, and if they exist we derive the spatial data from those records, instead of through an api call.
+# Prevailing geocoding services allow api calls to be made at a maximum fixed, finite rate.  For a high volume model, that 
+# rate may be exceeded regularly.  We can use this module to reduce the rate at which calls to the api are made by attempting to
+# geocode from local data first.  More specifically, we scan the database for geocoded records with similar descriptive locations,
+# and if they exist we derive the spatial data from those records, obviating the need for a third party api.
 
 require 'ym4r/google_maps/geocoding'
 
-      
 
 module TweetyJobs
 
@@ -32,12 +32,12 @@ module TweetyJobs
       end
       
       class GeocodableLogger < Logger
-
+        
         def format_message(severity, timestamp, progname, msg)
           "#{timestamp.to_formatted_s(:db)} #{severity} #{msg}\n" 
         end
         
-      end 
+      end
       
       # We use this class to make lat/lng objects for comparisons
       class LatLng
@@ -55,7 +55,7 @@ module TweetyJobs
         
       end
       
-
+      
       Logger = GeocodableLogger.new(File.join(RAILS_ROOT,"log","geocodable.log"))
       
       
@@ -99,14 +99,16 @@ module TweetyJobs
                          :geocoding_attributes_present,
                          :geocoding_indirect_attributes
                          
-          attr_accessor  :normalized_location
+          attr_accessor  :normalized_location,
+                         :api_results,
+                         :api_match
 
         end
       end
 
       module GeoCodableClassMethods
         
-        # This is for debugging more than anything
+        # This is for debugging, and isn't called anywhere
         def geocode(location, options={})
           results = Geocoding::get(location, options)
           GeoCodable::Logger.debug results.inspect
@@ -184,8 +186,8 @@ module TweetyJobs
           self.lng = coords[1]
         end
         
-        def inherit_geodata_from_geocoding_results(results)
-          first_result = results.first
+        def inherit_geodata_from_geocoding_results(result)
+          first_result = result.is_a?(Array) ? result.first : result
           self.lng = first_result.latlon[1]
           self.lat = first_result.latlon[0]
           self.city =  first_result.sub_administrative_area if self.attribute_names.include?("city")
@@ -220,7 +222,7 @@ module TweetyJobs
         
         # Does the location contain more than just spaces and punctuation
         def location_blank?
-          location_significant_chars.size == 0
+          location_significant_chars.blank?
         end
         
         def full_location
@@ -228,7 +230,7 @@ module TweetyJobs
         end
         
         def location_significant_chars
-           @normalized_location ||= self.location.to_s.gsub(/[^a-zA-Z0-9]+/,'')
+           @stripped_location ||= self.location.to_s.gsub(/[^a-zA-Z0-9]+/,'')
         end
 
         def geocoded?
@@ -341,10 +343,10 @@ module TweetyJobs
         end
 
         def geocoding_results(string=nil)  
-          results = Geocoding::get(geocoding_string(string), :output => 'json')
-          first_result = results.first
-          GeoCodable::Logger.debug "#{results.inspect} json results from api: First Result -> #{first_result.inspect}"
-          return results
+          @api_results = Geocoding::get(geocoding_string(string), :output => 'json')
+          @api_match   = @api_results.first
+          GeoCodable::Logger.debug "#{@api_results.inspect} json results from api: First Result -> #{ @api_match .inspect}"
+          return @api_results
         end
         
         def geocoding_string(string=nil)
@@ -399,7 +401,7 @@ module TweetyJobs
             GeoCodable::Logger.error "#{self.cache_key} is not geocodable"
           elsif geocode_indirectly
             return true
-          elsif geocode_with_api
+          elsif geocode_with_api(string)
             return true
           elsif iterative_zip_match?
             return true
